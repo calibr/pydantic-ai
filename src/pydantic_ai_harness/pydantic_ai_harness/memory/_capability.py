@@ -223,7 +223,7 @@ class Memory(AbstractCapability[AgentDepsT]):
         ctx: RunContext[AgentDepsT],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        """Add a bounded memory snapshot to only the current user request."""
+        """Add a bounded memory snapshot next to the latest user prompt."""
         store, scope = self.resolve_scope(ctx)
         scope_hash = hashlib.sha256(scope.encode()).hexdigest()[:16]
         # Scope-qualify the marker so several `Memory` capabilities on one agent
@@ -281,10 +281,17 @@ class Memory(AbstractCapability[AgentDepsT]):
                 )[:content_budget]
                 rendered = f'{_MEMORY_DATA_PREFIX}{rendered}{_MEMORY_DATA_SUFFIX}'
                 part = UserPromptPart([TextContent(rendered, metadata=marker)])
-                latest = request_context.messages[-1]
+                messages = request_context.messages
+                latest = messages[-1]
                 if not isinstance(latest, ModelRequest):  # pragma: no cover - guaranteed by the agent graph
                     raise RuntimeError('model request history must end with a ModelRequest')
-                request_context.messages[-1] = replace(latest, parts=[*latest.parts, part])
+                # After a tool call the last request only holds tool returns, where a lone user-role block reads
+                # as a new user message. Keep it next to the latest user prompt instead.
+                index, target = len(messages) - 1, latest
+                for i, message in enumerate(messages):
+                    if isinstance(message, ModelRequest) and any(isinstance(p, UserPromptPart) for p in message.parts):
+                        index, target = i, message
+                messages[index] = replace(target, parts=[*target.parts, part])
             if span.is_recording():
                 span.set_attributes(
                     {
